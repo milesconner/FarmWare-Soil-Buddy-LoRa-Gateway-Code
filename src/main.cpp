@@ -1,56 +1,68 @@
 
 #include <Arduino.h>
 
-#include <Wire.h>
+//libraries for LoRa comms
 #include <SPI.h>
-
-//libraries for the temperature sensor
-#include <OneWire.h>
-#include <DallasTemperature.h>
-
-//libraries for the moisture sensor
-#include <Adafruit_seesaw.h>
-
-//libraries for the air quality sensor
-#include <Adafruit_BME680.h>
-#include <bsec.h>
+#include <LoRa.h>
 
 //libraries for WiFi and MQTT server
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 
-//libraries for LoRa comms
-#include <LoRa.h>
-
 //LoRa transceiver pins
-#define G0 27 //orange (IRQ/DIO0)
-#define SCK 5 //blue
-#define MISO 21 //green
-#define MOSI 19 //yellow
-#define CS 32 //white (NSS/SS)
-#define RST 33 //red (NRESET/RESET)
+#define IRQ 27
+#define CS 32
+#define RST 33
 
-//temperature sensor is connected to GPIO 14
-#define temperature_sensor_pin 14
+//LoRa defines
+#define FREQUENCY_BAND 915E6
+#define SYNC_WORD 0x12
+#define NETWORK_CODE 0x3D8A
+#define GATEWAY_ID 0x00
+#define SOIL_BUDDY_ID 0x01
+#define LORA_TIMEOUT 5000000
+#define MAX_ATTEMPTS 5
 
-//how long the Soil Buddy should sleep for by default (in mins)
-#define default_sleep_period 1
+//WiFi, MQTT defines
+#define WIFI_TIMEOUT 10000000
+#define MQTT_TIMEOUT 10000000
 
-//for the air quality sensor (unused)
-#define SEALEVELPRESSURE_HPA (1013.25)
+//LoRa packet header struct
+struct Header {
+  uint16_t network_code;
+  uint8_t recipient_id;
+  uint8_t sender_id;
+};
 
-//temperature sensor object
-OneWire one_wire(temperature_sensor_pin);
-DallasTemperature temperature_sensor(&one_wire);
+//LoRa packet config payload struct
+//Gateway -> Soil Buddy
+struct ConfigPayload {
+  uint16_t next_big_cycle;
+  uint16_t sampling_interval;
+  uint8_t number_of_stabilizing_samples;
+  uint8_t number_of_actual_samples;
+};
 
-//moisture sensor object
-Adafruit_seesaw moisture_sensor;
-const uint8_t moisture_sensor_I2C_address = 0x36;
+//LoRa packet data payload struct
+//Soil Buddy -> Gateway
+//uses fixed-point arithmetic scaling to reduce the size of data
+struct DataPayload {
+  int16_t probe_temp;
 
-//air quality sensor object
-Adafruit_BME680 air_quality_sensor;
-const uint8_t air_quality_sensor_I2C_address = 0x76;
+  uint16_t stemma_moisture;
+
+  uint8_t bme_acc;
+  uint16_t bme_iaq;
+  uint16_t bme_co2;
+  int16_t bme_temp;
+  uint16_t bme_humid;
+};
+
+//volatile flag that gets set every time a new LoRa transmission is received
+volatile bool pending_lora_packet = false;
+//size of the pending packet
+int pending_packet_size = 0;
 
 //WiFi credentials (only one should be uncommented)
 
@@ -60,7 +72,7 @@ const uint8_t air_quality_sensor_I2C_address = 0x76;
 
 //OSU
 const char* wifi_ssid = "Registered4OSU";
-const char* wifi_password = "aC7Yb6rcLu5xuWe3";
+const char* wifi_password = "ASYeVEP6pp3aKTfV";
 
 //MQTT server credentials
 const char* mqtt_server_url = "9ccaa78e62aa4522ab541b0ca1426b5c.s1.eu.hivemq.cloud";
@@ -73,7 +85,7 @@ WiFiClientSecure wifi_client;
 PubSubClient mqtt_client(wifi_client);
 
 //device name
-const char* device_name = "Soil Buddy Prototype";
+const char* device_name = "Soil Buddy LoRa Gateway";
 
 //MQTT topic for finding sleep configuration
 const char* sleep_config_topic = "soil-buddy-prototype/sleep-config";
@@ -87,75 +99,33 @@ const char* moisture_data_topic = "soil-buddy-prototype/moisture-data";
 //MQTT topic for publishing air quality data
 const char* air_quality_data_topic = "soil-buddy-prototype/air-quality-data";
 
-//how long the Soil Buddy will sleep for (in mins)
-//gets set by the sleep config topic, otherwise it'll use the default value
-int sleep_period = default_sleep_period;
+//LoRa functions
+bool init_lora(); //sets up LoRa, returns whether it succeeded
+void lora_packet_received(int packet_size); //gets called every time a new LoRa transmission is received
+void process_lora_packet(); //function to process received LoRa packets
 
-void connect_to_wifi();
-void connect_to_mqtt_server();
-void mqtt_callback_function(char* topic, uint8_t* message, unsigned int length);
-float read_temperature_sensor();
-uint16_t read_moisture_sensor();
-uint32_t read_air_quality_sensor();
-void init_lora();
-void send_lora_string(const char* message);
-void lora_received(int packet_size);
+//WiFi and MQTT server functions
+bool connect_to_wifi(); //connects to WiFi, returns whether it succeeded
+bool connect_to_mqtt_server(); //connects to MQTT server, returns whether it succeeded
+void mqtt_callback_function(char* topic, uint8_t* message, unsigned int length); //gets called every time a new message is published to a subscribed MQTT topic
 
-//Setup for RGB LED
-const int redPin = 27;
-const int greenPin = 12;
-const int bluePin = 13;
-
-volatile bool process_lora = false;
-uint64_t start_time = 0;
-String data = "";
-int size = 0;
-int rssi = 0;
-float snr = 0.0f;
+//utility functions
+float calculate_VPD(float temperature, float humidity);
+void print_data(DataPayload data);
 
 void setup() {
-  //begin serial monitor
+  //begin the serial monitor
   Serial.begin(115200);
+  Serial.printf("\n\nSoil Buddy LoRa Gateway is awake...\n");
 
-  //pinMode(redPin, OUTPUT);
-  //pinMode(greenPin, OUTPUT);
-  //pinMode(bluePin, OUTPUT);
-  //digitalWrite(redPin, HIGH);
-  //digitalWrite(greenPin, HIGH);
-  //digitalWrite(bluePin, HIGH);
+  //connect to WiFi
+  connect_to_wifi();
 
-  Serial.printf("\n\n");
-  Serial.printf("Soil Buddy Gateway is awake...\n\n");
-
-  //initialize temperature sensor
-  //temperature_sensor.begin();
-
-  //Serial.printf("Temperature sensor online...\n");
-
-  //initialize moisture sensor
-  //moisture_sensor.begin(moisture_sensor_I2C_address);
-
-  //Serial.printf("Moisture sensor online...\n\n");
-
-  //initialize air quality sensor
-  //air_quality_sensor.begin(air_quality_sensor_I2C_address);
-
-  //air_quality_sensor.setTemperatureOversampling(BME680_OS_8X);
-  //air_quality_sensor.setHumidityOversampling(BME680_OS_2X);
-  //air_quality_sensor.setPressureOversampling(BME680_OS_4X);
-  //air_quality_sensor.setIIRFilterSize(BME680_FILTER_SIZE_3);
-  //air_quality_sensor.setGasHeater(320, 150);
-
-  //Serial.printf("Air quality sensor online...\n\n");
+  //connect to MQTT server
+  connect_to_mqtt_server();
 
   //initialize LoRa
   init_lora();
-
-  //connect to WiFi
-  //connect_to_wifi();
-
-  //connect to MQTT server
-  //connect_to_mqtt_server();
 
   //give the MQTT client time to receive the sleep config message
   //uint64_t start_time = esp_timer_get_time();
@@ -184,93 +154,99 @@ void setup() {
   //mqtt_client.publish(air_quality_data_topic, air_message);
 
   //Serial.printf("\nPublished data to MQTT server.\n\nGoing into deep sleep for %d minutes.\nSee you then!\n\n", sleep_period);
-
-  //forces program to wait for the serial monitor buffer to empty out, otherwise it'll go to sleep before everything has been printed
-  //Serial.flush();
-
-  //go into deep sleep
-  //ESP32 commits suicide here, when it wakes it'll completely reboot and execute all the code from the beginning
-  //esp_sleep_enable_timer_wakeup(sleep_period * 60000000);
-  //esp_deep_sleep_start();
-
-  start_time = esp_timer_get_time();
 }
 
-//unused
 void loop() {
-  //loop should never be reached unless deep sleep is broken
-  //Serial.printf("YOU SHOULDN'T BE SEEING THIS!!\n\n");
+  //if a LoRa transmission came in, process it and clear the flag
+  if(pending_lora_packet) {
+    process_lora_packet();
 
-  if(process_lora) {
-    Serial.printf("LoRa packet received.\n");
-    Serial.printf("Packet size: %d\n", size);
-    Serial.printf("Message: ");
-
-    Serial.print(data);
-
-    Serial.printf("\n");
-    Serial.printf("RSSI: %d\n", rssi);
-    Serial.printf("SNR: %.3f\n\n", snr);
-
-    process_lora = false;
-  }
-
-  if(esp_timer_get_time() - start_time > 45000000) {
-    send_lora_string("GATEWAY TO BUDDY!!!!");
-    start_time = esp_timer_get_time();
-  }
+    pending_packet_size = 0;
+    pending_lora_packet = false;
+  }  
 }
 
-//function initializes the LoRa transceiver
-void init_lora() {
-  LoRa.setPins(CS, RST, G0);
+bool init_lora() {
+  LoRa.setPins(CS, RST, IRQ);
 
-  Serial.printf("Initializing LoRa...");
-
-  while(! LoRa.begin(915E6)) {
-    delay(500);
-    Serial.printf(".");
+  if(! LoRa.begin(FREQUENCY_BAND)) {
+    Serial.printf("LoRa failed to initialize!\n");
+    return false;
   }
 
-  LoRa.setSyncWord(0xF3);
+  LoRa.setSyncWord(SYNC_WORD);
 
-  LoRa.onReceive(lora_received);
+  LoRa.onReceive(lora_packet_received);
   LoRa.receive();
 
-  Serial.printf("\nLoRa online!\n\n");
+  Serial.printf("LoRa online...\n");
+
+  return true;
 }
 
-//function transmits a string over LoRa
-void send_lora_string(const char* message) {
+void lora_packet_received(int packet_size) {
+  pending_packet_size = packet_size;
+  pending_lora_packet = true;
+}
+
+void process_lora_packet() {
+  //packet size mismatch, throw it away
+  if(pending_packet_size < (sizeof(Header) + sizeof(DataPayload))) {
+    return;
+  }
+
+  //read header
+  Header header;
+  LoRa.readBytes((uint8_t*) &header, sizeof(Header));
+
+  //network code doesn't match, this packet isn't from one of our devices, throw it away
+  if(header.network_code != NETWORK_CODE) {
+    return;
+  }
+
+  //we aren't the intended recipient, packet was meant for another device, throw it away
+  if(header.recipient_id != GATEWAY_ID) {
+    return;
+  }
+
+  //read data payload
+  DataPayload data_payload;
+  LoRa.readBytes((uint8_t*) &data_payload, sizeof(DataPayload));
+
+  Serial.printf("Received data from Soil Buddy!\n");
+  print_data(data_payload);
+
+  //build the header
+  Header response_header;
+
+  response_header.network_code = NETWORK_CODE;
+  response_header.recipient_id = SOIL_BUDDY_ID;
+  response_header.sender_id = GATEWAY_ID;
+
+  //build configuration payload
+  ConfigPayload config_payload;
+
+  config_payload.next_big_cycle = 2;
+  config_payload.number_of_actual_samples = 20;
+  config_payload.number_of_stabilizing_samples = 3;
+  config_payload.sampling_interval = 300;
+
+  //send header + config
   LoRa.beginPacket();
-  LoRa.print(message);
+  LoRa.write((uint8_t*) &response_header, sizeof(Header));
+  LoRa.write((uint8_t*) &config_payload, sizeof(ConfigPayload));
   LoRa.endPacket();
 
-  Serial.printf("Sent '");
-  Serial.printf(message);
-  Serial.printf("' over LoRa.\n\n");
+  Serial.printf("Sent configuration acknowledgement to Soil Buddy!\n");
 
-  LoRa.onReceive(lora_received);
+  //start listening for Gateway response
+  LoRa.onReceive(lora_packet_received);
   LoRa.receive();
 }
 
-//function is called everytime a LoRa packet is received
-//this is called from an ISR and shouldn't be doing serial prints, but it's whatever for now
-void lora_received(int packet_size) {
-  size = packet_size;
+bool connect_to_wifi() {
+  int64_t start_time = esp_timer_get_time();
 
-  while(LoRa.available()) {
-    data = LoRa.readString();
-  }
-
-  rssi = LoRa.packetRssi();
-  snr = LoRa.packetSnr();
-
-  process_lora = true;
-}
-
-//function connects to the WiFi network
-void connect_to_wifi() {
   wifi_client.setInsecure();
 
   Serial.printf("Connecting to WiFi network...");
@@ -278,33 +254,46 @@ void connect_to_wifi() {
   WiFi.begin(wifi_ssid, wifi_password);
 
   while(WiFi.status() != WL_CONNECTED) {
+    if(esp_timer_get_time() - start_time > WIFI_TIMEOUT) {
+      Serial.printf("\nFailed to connect to WiFi network!\n");
+      return false;
+    }
+
     delay(500);
     Serial.printf(".");
   }
 
-  Serial.printf("\nConnected to WiFi network!\n\n");
+  Serial.printf("\nConnected to WiFi network!\n");
+
+  return true;
 }
 
-//function connects to the MQTT server
-void connect_to_mqtt_server() {
+bool connect_to_mqtt_server() {
+  int64_t start_time = esp_timer_get_time();
+
   mqtt_client.setServer(mqtt_server_url, mqtt_server_port);
   mqtt_client.setCallback(mqtt_callback_function);
   
   Serial.printf("Connecting to MQTT server...");
 
   while(! mqtt_client.connected()) {
+    if(esp_timer_get_time() - start_time > MQTT_TIMEOUT) {
+      Serial.printf("\nFailed to connect to MQTT server!\n");
+      return false;
+    }
+
     delay(500);
     mqtt_client.connect(device_name, mqtt_server_username, mqtt_server_password);
     Serial.printf(".");
   }
 
-  Serial.printf("\nConnected to MQTT server!\n\n");
+  Serial.printf("\nConnected to MQTT server!\n");
 
-  mqtt_client.subscribe(sleep_config_topic);
+  //mqtt_client.subscribe(sleep_config_topic);
+
+  return true;
 }
 
-//this function is called whenever a message is posted to a topic the Soil Buddy has subscribed to
-//config messages will be marked with the retain flag so that they get sent in response to us subscribing
 void mqtt_callback_function(char* topic, uint8_t* message, unsigned int length) {
   String incoming_message = "";
 
@@ -312,36 +301,28 @@ void mqtt_callback_function(char* topic, uint8_t* message, unsigned int length) 
     incoming_message += (char) message[i];
   }
 
-  if(String(topic) == sleep_config_topic) {
-    sleep_period = incoming_message.toInt();
-  }
+  //if(String(topic) == sleep_config_topic) {
+    //sleep_period = incoming_message.toInt();
+  //}
 }
 
-//function returns temperature value
-float read_temperature_sensor() {
-  temperature_sensor.requestTemperatures();
-  float temp_fahrenheit = temperature_sensor.getTempFByIndex(0);
-
-  Serial.printf("Temperature reading in Fahrenheit: %.3f\n", temp_fahrenheit);
-
-  return temp_fahrenheit;
+float calculate_VPD(float temperature, float humidity) {
+  float SVP = 0.61078 * exp((17.27 * temperature) / (temperature + 237.3)); //Saturation Vapor Pressure  
+  float AVP = SVP * (humidity / 100.0); //Actual Vapor Pressure
+  float VPD = SVP - AVP; //Vapor Pressure Deficit
+    
+  return (VPD * 1000.0); //Convert to Pa
 }
 
-//function returns moisture value
-uint16_t read_moisture_sensor() {
-  uint16_t capacitance = moisture_sensor.touchRead(0);
-
-  Serial.printf("Capacitance reading (moisture, higher = more moisture): %hu\n", capacitance);
-
-  return capacitance;
-}
-
-//function returns air quality value
-uint32_t read_air_quality_sensor() {
-  air_quality_sensor.performReading();
-  uint32_t air_quality = air_quality_sensor.gas_resistance;
-
-  Serial.printf("Gas resistance reading in Ohms (air pollutants (VOCs), higher = better air quality): %hu \n", air_quality);
-
-  return air_quality;
+void print_data(DataPayload data) {
+  Serial.printf("-------------------------- SOIL BUDDY DATA -------------------------\n");
+  Serial.printf("BME680 Accuracy Score:              %u\n", data.bme_acc);
+  Serial.printf("BME680 IAQ:                         %.2f\n", ((float) data.bme_iaq / 100.0F));
+  Serial.printf("BME680 CO2:                         %.1f PPM\n", ((float) data.bme_co2 / 10.0F));
+  Serial.printf("BME680 Compensated Temperature:     %.2f C\n", ((float) data.bme_temp / 100.0F));
+  Serial.printf("BME680 Compensated Humidity:        %.2f %%\n", ((float) data.bme_humid / 100.0F));
+  Serial.printf("BME680 VPD:                         %.2f PA\n", calculate_VPD(((float) data.bme_temp / 100.0F), ((float) data.bme_humid / 100.0F)));
+  Serial.printf("DS18B20 Probe Temperature:          %.2f C\n", ((float) data.probe_temp / 100.0F));
+  Serial.printf("STEMMA Soil Capacitance:            %hu\n", data.stemma_moisture);
+  Serial.printf("--------------------------------------------------------------------\n");
 }
