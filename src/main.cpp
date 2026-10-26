@@ -19,13 +19,17 @@
 //LoRa defines
 #define FREQUENCY_BAND 915E6
 #define SYNC_WORD 0x12
+#define SPREADING_FACTOR 12
+#define BANDWIDTH 62.5E3
+#define CODING_RATE 8
+#define TRANSMIT_POWER 20
 #define NETWORK_CODE 0x3D8A
 #define GATEWAY_ID 0x00
 #define SOIL_BUDDY_ID 0x01
 
 //WiFi, MQTT defines
-#define WIFI_TIMEOUT 10000000
-#define MQTT_TIMEOUT 10000000
+#define WIFI_TIMEOUT 15000000
+#define MQTT_TIMEOUT 15000000
 
 //system configuration defaults
 #define NEXT_BIG_CYCLE_DEFAULT 1
@@ -34,7 +38,7 @@
 #define NUMBER_OF_ACTUAL_SAMPLES_DEFAULT 10
 
 //LoRa packet header struct
-struct Header {
+struct __attribute__((packed)) Header {
   uint16_t network_code;
   uint8_t recipient_id;
   uint8_t sender_id;
@@ -42,7 +46,7 @@ struct Header {
 
 //LoRa packet config payload struct
 //Gateway -> Soil Buddy
-struct ConfigPayload {
+struct __attribute__((packed)) ConfigPayload {
   uint16_t next_big_cycle = NEXT_BIG_CYCLE_DEFAULT;
   uint16_t sampling_interval = SAMPLING_INTERVAL_DEFAULT;
   uint8_t number_of_stabilizing_samples = NUMBER_OF_STABILIZING_SAMPLES_DEFAULT;
@@ -52,7 +56,7 @@ struct ConfigPayload {
 //LoRa packet data payload struct
 //Soil Buddy -> Gateway
 //uses fixed-point arithmetic scaling to reduce the size of data
-struct DataPayload {
+struct __attribute__((packed)) DataPayload {
   int16_t probe_temp;
 
   uint16_t stemma_moisture;
@@ -175,6 +179,11 @@ bool init_lora() {
   }
 
   LoRa.setSyncWord(SYNC_WORD);
+  LoRa.setSpreadingFactor(SPREADING_FACTOR);       // Choices: 7 to 12 (Higher = more range, slower data)
+  LoRa.setSignalBandwidth(BANDWIDTH);              // 125E3 (125 kHz) or 62.5E3 for narrower/deeper reach
+  LoRa.setCodingRate4(CODING_RATE);                // 4/5, 4/6, 4/7, or 4/8 (4/8 gives max error correction)
+  LoRa.setTxPower(TRANSMIT_POWER);                 // Max power (adjust based on your module's legal/hardware limits, e.g., 17-20 dBm)
+  LoRa.enableCrc();                                // Enable cyclic redundancy check for packet integrity
 
   LoRa.onReceive(lora_packet_received);
   LoRa.receive();
