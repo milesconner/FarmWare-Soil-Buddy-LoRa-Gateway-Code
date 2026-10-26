@@ -76,12 +76,12 @@ int pending_packet_size = 0;
 //WiFi credentials (only one should be uncommented)
 
 //Miles' apartment
-const char* wifi_ssid = "Tremors 7";
-const char* wifi_password = "gloverforn64";
+//const char* wifi_ssid = "Tremors 7";
+//const char* wifi_password = "gloverforn64";
 
 //OSU
-//const char* wifi_ssid = "Registered4OSU";
-//const char* wifi_password = "ASYeVEP6pp3aKTfV";
+const char* wifi_ssid = "Registered4OSU";
+const char* wifi_password = "ASYeVEP6pp3aKTfV";
 
 //MQTT server credentials
 const char* mqtt_server_url = "9ccaa78e62aa4522ab541b0ca1426b5c.s1.eu.hivemq.cloud";
