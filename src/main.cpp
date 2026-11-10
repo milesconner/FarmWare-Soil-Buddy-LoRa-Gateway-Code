@@ -36,9 +36,9 @@
 
 //system configuration defaults
 #define NEXT_BIG_CYCLE_DEFAULT 1
-#define SAMPLING_INTERVAL_DEFAULT 500
-#define NUMBER_OF_STABILIZING_SAMPLES_DEFAULT 5
-#define NUMBER_OF_ACTUAL_SAMPLES_DEFAULT 10
+#define SAMPLING_INTERVAL_DEFAULT 1000
+#define NUMBER_OF_STABILIZING_SAMPLES_DEFAULT 3
+#define NUMBER_OF_ACTUAL_SAMPLES_DEFAULT 12
 
 //LoRa packet header struct
 struct __attribute__((packed)) Header {
@@ -63,6 +63,10 @@ struct __attribute__((packed)) DataPayload {
   int16_t probe_temp;
 
   uint16_t stemma_moisture;
+
+  uint16_t npk_raw_nit;
+  uint16_t npk_raw_phos;
+  uint16_t npk_raw_pot;
 
   uint8_t bme_acc;
   uint16_t bme_iaq;
@@ -111,6 +115,10 @@ const char* bme_humid_topic = "soil-buddy-prototype/bme-humid";
 const char* bme_vpd_topic = "soil-buddy-prototype/bme-vpd";
 const char* probe_temp_topic = "soil-buddy-prototype/probe-temp";
 const char* stemma_moisture_topic = "soil-buddy-prototype/stemma-moisture";
+const char* moisture_content_percent_topic = "soil-buddy-prototype/moisture-content-percent";
+const char* npk_raw_nit_topic = "soil-buddy-prototype/npk-raw-nit";
+const char* npk_raw_phos_topic = "soil-buddy-prototype/npk-raw-phos";
+const char* npk_raw_pot_topic = "soil-buddy-prototype/npk-raw-pot";
 const char* data_time_topic = "soil-buddy-prototype/data-time";
 const char* next_big_cycle_topic = "soil-buddy-prototype/next-big-cycle";
 const char* sampling_interval_topic = "soil-buddy-prototype/sampling-interval";
@@ -140,6 +148,7 @@ void mqtt_callback_function(char* topic, uint8_t* message, unsigned int length);
 
 //utility functions
 float calculate_VPD(float temperature, float humidity); //calculates VPD from BME680 temperature and humidity
+float calculate_moisture_content_percent(uint16_t raw_moisture); //returns moisture content as a percent from STEMMA value
 void print_data(DataPayload data); //prints Soil Buddy data
 void print_config(); //prints Soil Buddy config
 void update_local_time(); //updates the local time of day string (local_time)
@@ -268,6 +277,10 @@ void process_lora_packet() {
   char bme_vpd_message[16];
   char probe_temp_message[16];
   char stemma_moisture_message[16];
+  char moisture_content_percent_message[16];
+  char npk_raw_nit_message[16];
+  char npk_raw_phos_message[16];
+  char npk_raw_pot_message[16];
 
   itoa(data_payload.bme_acc, bme_acc_message, 10);
   dtostrf(((float) data_payload.bme_iaq / 100.0F), 1, 2, bme_iaq_message);
@@ -277,6 +290,10 @@ void process_lora_packet() {
   dtostrf(calculate_VPD(((float) data_payload.bme_temp / 100.0F), ((float) data_payload.bme_humid / 100.0F)), 1, 2, bme_vpd_message);
   dtostrf(((float) data_payload.probe_temp / 100.0F), 1, 2, probe_temp_message);
   itoa(data_payload.stemma_moisture, stemma_moisture_message, 10);
+  dtostrf(calculate_moisture_content_percent(data_payload.stemma_moisture), 1, 2, moisture_content_percent_message);
+  itoa(data_payload.npk_raw_nit, npk_raw_nit_message, 10);
+  itoa(data_payload.npk_raw_phos, npk_raw_phos_message, 10);
+  itoa(data_payload.npk_raw_pot, npk_raw_pot_message, 10);
 
   //publish data to the MQTT server
   mqtt_client.publish(bme_acc_topic, bme_acc_message, true);
@@ -287,6 +304,10 @@ void process_lora_packet() {
   mqtt_client.publish(bme_vpd_topic, bme_vpd_message, true);
   mqtt_client.publish(probe_temp_topic, probe_temp_message, true);
   mqtt_client.publish(stemma_moisture_topic, stemma_moisture_message, true);
+  mqtt_client.publish(moisture_content_percent_topic, moisture_content_percent_message, true);
+  mqtt_client.publish(npk_raw_nit_topic, npk_raw_nit_message, true);
+  mqtt_client.publish(npk_raw_phos_topic, npk_raw_phos_message, true);
+  mqtt_client.publish(npk_raw_pot_topic, npk_raw_pot_message, true);
   mqtt_client.publish(data_time_topic, local_time, true);
 
 
@@ -447,19 +468,40 @@ float calculate_VPD(float temperature, float humidity) {
   return (VPD * 1000.0); //Convert to Pa
 }
 
+float calculate_moisture_content_percent(uint16_t raw_moisture) {
+  //calculate moisture content as a percentage
+  //this is a rough estimate based on the capacitance reading
+  //the formula is based on empirical data and may not be accurate for all soil types
+  float moisture_content = 0.02699 * ((float) raw_moisture) - 13.36;
+
+  //clamp the value between 0 and 100
+  if(moisture_content < 0) {
+    moisture_content = 0;
+    
+  } else if(moisture_content > 100) {
+    moisture_content = 100;
+  }
+
+  return moisture_content;
+}
+
 void print_data(DataPayload data) {
   Serial.printf("-------------------------- SOIL BUDDY DATA -------------------------\n");
   Serial.printf("Measurement Time: ");
   Serial.printf(local_time);
   Serial.printf("\n");
-  Serial.printf("BME680 Accuracy Score:              %u\n", data.bme_acc);
-  Serial.printf("BME680 IAQ:                         %.2f\n", ((float) data.bme_iaq / 100.0F));
-  Serial.printf("BME680 CO2:                         %.1f PPM\n", ((float) data.bme_co2 / 10.0F));
-  Serial.printf("BME680 Compensated Temperature:     %.2f C\n", ((float) data.bme_temp / 100.0F));
-  Serial.printf("BME680 Compensated Humidity:        %.2f %%\n", ((float) data.bme_humid / 100.0F));
-  Serial.printf("BME680 VPD:                         %.2f PA\n", calculate_VPD(((float) data.bme_temp / 100.0F), ((float) data.bme_humid / 100.0F)));
-  Serial.printf("DS18B20 Probe Temperature:          %.2f C\n", ((float) data.probe_temp / 100.0F));
-  Serial.printf("STEMMA Soil Capacitance:            %hu\n", data.stemma_moisture);
+  Serial.printf("BME680 Accuracy Score:                 %u\n", data.bme_acc);
+  Serial.printf("BME680 IAQ:                            %.2f\n", ((float) data.bme_iaq / 100.0F));
+  Serial.printf("BME680 CO2:                            %.1f PPM\n", ((float) data.bme_co2 / 10.0F));
+  Serial.printf("BME680 Compensated Temperature:        %.2f C\n", ((float) data.bme_temp / 100.0F));
+  Serial.printf("BME680 Compensated Humidity:           %.2f %%\n", ((float) data.bme_humid / 100.0F));
+  Serial.printf("BME680 VPD:                            %.2f PA\n", calculate_VPD(((float) data.bme_temp / 100.0F), ((float) data.bme_humid / 100.0F)));
+  Serial.printf("DS18B20 Probe Temperature:             %.2f C\n", ((float) data.probe_temp / 100.0F));
+  Serial.printf("STEMMA Soil Capacitance:               %hu\n", data.stemma_moisture);
+  Serial.printf("STEMMA Moisture Content Percentage:    %.2f %%\n", calculate_moisture_content_percent(data.stemma_moisture));
+  Serial.printf("NPK Raw Nitrogen:                      %hu\n", data.npk_raw_nit);
+  Serial.printf("NPK Raw Phosphorus:                    %hu\n", data.npk_raw_phos);
+  Serial.printf("NPK Raw Potassium:                     %hu\n", data.npk_raw_pot);
   Serial.printf("--------------------------------------------------------------------\n");
 }
 
