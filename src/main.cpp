@@ -316,8 +316,8 @@ void process_lora_packet() {
     Serial.printf("Failed to get epoch time from NTP server!\n");
   }
 
-  StaticJsonDocument<256> doc;
-  doc["ts"] = now_epoch;
+  StaticJsonDocument<512> doc;
+  doc["ts"] = (uint32_t) now_epoch;
   doc["acc"] = data_payload.bme_acc;
   doc["iaq"] = serialized(bme_iaq_message);
   doc["co2"] = serialized(bme_co2_message);
@@ -326,8 +326,12 @@ void process_lora_packet() {
   doc["vpd"] = serialized(bme_vpd_message);
   doc["probe_temp"] = serialized(probe_temp_message);
   doc["moisture"] = data_payload.stemma_moisture;
+  doc["moisture_percent"] = serialized(moisture_content_percent_message);
+  doc["npk_nit"] = data_payload.npk_raw_nit;
+  doc["npk_phos"] = data_payload.npk_raw_phos;
+  doc["npk_pot"] = data_payload.npk_raw_pot;
 
-  char json_message[256];
+  char json_message[384];
   size_t json_length = serializeJson(doc, json_message, sizeof(json_message));
   bool ok = mqtt_client.publish(reading_topic, (const uint8_t*) json_message, json_length, true);
   Serial.printf("Reading publish %s (%u bytes): %s\n", ok ? "OK" : "FAILED", (unsigned) json_length, json_message);
@@ -431,7 +435,7 @@ void mqtt_callback_function(char* topic, uint8_t* message, unsigned int length) 
   }
 
   if(t == actual_samples_topic) {
-    if(value >= 0 && value <= 50) {
+    if(value >= 1 && value <= 50) {
       soil_buddy_config.number_of_actual_samples = value;
       Serial.printf("Received 'Number of Actual Samples' configuration update from MQTT server...\n");
     } else {
