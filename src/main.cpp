@@ -11,6 +11,9 @@
 #include <PubSubClient.h>
 #include <time.h>
 
+//library for JSON parsing
+#include <ArduinoJson.h>
+
 //LoRa transceiver pins
 #define IRQ 27
 #define CS 32
@@ -96,6 +99,9 @@ PubSubClient mqtt_client(wifi_client);
 //device name
 const char* device_name = "Soil Buddy LoRa Gateway";
 
+//MQTT topic for Soil Buddy readings
+const char* reading_topic = "soil-buddy-prototype/reading";
+
 //MQTT topics
 const char* bme_acc_topic = "soil-buddy-prototype/bme-acc";
 const char* bme_iaq_topic = "soil-buddy-prototype/bme-iaq";
@@ -158,6 +164,17 @@ void setup() {
 }
 
 void loop() {
+
+  if(WiFi.status() != WL_CONNECTED) {
+    Serial.printf("WiFi connection lost, reconnecting...\n");
+    connect_to_wifi();
+  }
+
+  if(WiFi.status() == WL_CONNECTED && ! mqtt_client.connected()) {
+    Serial.printf("MQTT connection lost, reconnecting...\n");
+    connect_to_mqtt_server();
+  }
+  
   //loop the MQTT client
   mqtt_client.loop();
 
@@ -272,6 +289,28 @@ void process_lora_packet() {
   mqtt_client.publish(stemma_moisture_topic, stemma_moisture_message, true);
   mqtt_client.publish(data_time_topic, local_time, true);
 
+
+  time_t now_epoch = time(nullptr);
+  if (now_epoch < 1700000000) {
+    Serial.printf("Failed to get epoch time from NTP server!\n");
+  }
+
+  StaticJsonDocument<256> doc;
+  doc["ts"] = now_epoch;
+  doc["acc"] = data_payload.bme_acc;
+  doc["iaq"] = serialized(bme_iaq_message);
+  doc["co2"] = serialized(bme_co2_message);
+  doc["temp"] = serialized(bme_temp_message);
+  doc["humid"] = serialized(bme_humid_message);
+  doc["vpd"] = serialized(bme_vpd_message);
+  doc["probe_temp"] = serialized(probe_temp_message);
+  doc["moisture"] = data_payload.stemma_moisture;
+
+  char json_message[256];
+  size_t json_length = serializeJson(doc, json_message, sizeof(json_message));
+  bool ok = mqtt_client.publish(reading_topic, (const uint8_t*) json_message, json_length, true);
+  Serial.printf("Reading publish %s (%u bytes): %s\n", ok ? "OK" : "FAILED", (unsigned) json_length, json_message);
+
   Serial.printf("Published data to the MQTT server!\n");
 
   //start listening for Soil Buddy data
@@ -308,6 +347,7 @@ bool connect_to_mqtt_server() {
 
   mqtt_client.setServer(mqtt_server_url, mqtt_server_port);
   mqtt_client.setCallback(mqtt_callback_function);
+  mqtt_client.setBufferSize(512);
   
   Serial.printf("Connecting to MQTT server...");
 
@@ -339,7 +379,46 @@ void mqtt_callback_function(char* topic, uint8_t* message, unsigned int length) 
     incoming_message += (char) message[i];
   }
 
-  if(String(topic) == next_big_cycle_topic) {
+  long value = incoming_message.toInt();
+  String t = String(topic);
+
+  if(t == next_big_cycle_topic) {
+    if(value >= 1 && value <= 288) {
+      soil_buddy_config.next_big_cycle = value;
+      Serial.printf("Received 'Next Big Cycle' configuration update from MQTT server...\n");
+    } else {
+      Serial.printf("Received invalid 'Next Big Cycle' configuration update from MQTT server: %ld\n", value);
+    }
+  }
+
+  if(t == sampling_interval_topic) {
+    if(value >= 50 && value <= 60000) {
+      soil_buddy_config.sampling_interval = value;
+      Serial.printf("Received 'Sampling Interval' configuration update from MQTT server...\n");
+    } else {
+      Serial.printf("Received invalid 'Sampling Interval' configuration update from MQTT server: %ld\n", value);
+    }
+  }
+
+  if(t == stabilizing_samples_topic) {
+    if(value >= 0 && value <= 50) {
+      soil_buddy_config.number_of_stabilizing_samples = value;
+      Serial.printf("Received 'Number of Stabilizing Samples' configuration update from MQTT server...\n");
+    } else {
+      Serial.printf("Received invalid 'Number of Stabilizing Samples' configuration update from MQTT server: %ld\n", value);
+    }
+  }
+
+  if(t == actual_samples_topic) {
+    if(value >= 0 && value <= 50) {
+      soil_buddy_config.number_of_actual_samples = value;
+      Serial.printf("Received 'Number of Actual Samples' configuration update from MQTT server...\n");
+    } else {
+      Serial.printf("Received invalid 'Number of Actual Samples' configuration update from MQTT server: %ld\n", value);
+    }
+  }
+
+  /*if(String(topic) == next_big_cycle_topic) {
     soil_buddy_config.next_big_cycle = incoming_message.toInt();
     Serial.printf("Received 'Next Big Cycle' configuration update from MQTT server...\n");
   }
@@ -357,7 +436,7 @@ void mqtt_callback_function(char* topic, uint8_t* message, unsigned int length) 
   if(String(topic) == actual_samples_topic) {
     soil_buddy_config.number_of_actual_samples = incoming_message.toInt();
     Serial.printf("Received 'Number of Actual Samples' configuration update from MQTT server...\n");
-  }
+  }*/
 }
 
 float calculate_VPD(float temperature, float humidity) {
