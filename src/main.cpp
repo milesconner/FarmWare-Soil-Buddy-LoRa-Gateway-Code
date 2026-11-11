@@ -283,19 +283,19 @@ void process_lora_packet() {
 
   StaticJsonDocument<512> doc;
 
-  doc["data_time"] = serialized(local_time);
-  doc["bme_acc"] = serialized(data_payload.bme_acc);
-  doc["bme_iaq"] = serialized(bme_iaq_message);
-  doc["bme_co2"] = serialized(bme_co2_message);
-  doc["bme_temp"] = serialized(bme_temp_message);
-  doc["bme_humid"] = serialized(bme_humid_message);
-  doc["bme_vpd"] = serialized(bme_vpd_message);
-  doc["probe_temp"] = serialized(probe_temp_message);
-  doc["stemma_raw_moisture"] = serialized(data_payload.stemma_moisture);
-  doc["stemma_moisture_percent"] = serialized(moisture_content_percent_message);
-  doc["npk_raw_nit"] = serialized(data_payload.npk_raw_nit);
-  doc["npk_raw_phos"] = serialized(data_payload.npk_raw_phos);
-  doc["npk_raw_pot"] = serialized(data_payload.npk_raw_pot);
+  doc["data_time"] = local_time;
+  doc["bme_acc"] = bme_acc_message;
+  doc["bme_iaq"] = bme_iaq_message;
+  doc["bme_co2"] = bme_co2_message;
+  doc["bme_temp"] = bme_temp_message;
+  doc["bme_humid"] = bme_humid_message;
+  doc["bme_vpd"] = bme_vpd_message;
+  doc["probe_temp"] = probe_temp_message;
+  doc["stemma_raw_moisture"] = stemma_moisture_message;
+  doc["stemma_moisture_percent"] = moisture_content_percent_message;
+  doc["npk_raw_nit"] = npk_raw_nit_message;
+  doc["npk_raw_phos"] = npk_raw_phos_message;
+  doc["npk_raw_pot"] = npk_raw_pot_message;
 
   char json_message[384];
   size_t json_length = serializeJson(doc, json_message, sizeof(json_message));
