@@ -11,6 +11,9 @@
 #include <PubSubClient.h>
 #include <time.h>
 
+//JSON library
+#include <ArduinoJson.h>
+
 //LoRa transceiver pins
 #define IRQ 27
 #define CS 32
@@ -100,20 +103,10 @@ PubSubClient mqtt_client(wifi_client);
 //device name
 const char* device_name = "Soil Buddy LoRa Gateway";
 
-//MQTT topics
-const char* bme_acc_topic = "soil-buddy-prototype/bme-acc";
-const char* bme_iaq_topic = "soil-buddy-prototype/bme-iaq";
-const char* bme_co2_topic = "soil-buddy-prototype/bme-co2";
-const char* bme_temp_topic = "soil-buddy-prototype/bme-temp";
-const char* bme_humid_topic = "soil-buddy-prototype/bme-humid";
-const char* bme_vpd_topic = "soil-buddy-prototype/bme-vpd";
-const char* probe_temp_topic = "soil-buddy-prototype/probe-temp";
-const char* stemma_moisture_topic = "soil-buddy-prototype/stemma-moisture";
-const char* moisture_content_percent_topic = "soil-buddy-prototype/moisture-content-percent";
-const char* npk_raw_nit_topic = "soil-buddy-prototype/npk-raw-nit";
-const char* npk_raw_phos_topic = "soil-buddy-prototype/npk-raw-phos";
-const char* npk_raw_pot_topic = "soil-buddy-prototype/npk-raw-pot";
-const char* data_time_topic = "soil-buddy-prototype/data-time";
+//MQTT topic for Soil Buddy data
+const char* data_topic = "soil-buddy-prototype/data";
+
+//MQTT topics for Soil Buddy config
 const char* next_big_cycle_topic = "soil-buddy-prototype/next-big-cycle";
 const char* sampling_interval_topic = "soil-buddy-prototype/sampling-interval";
 const char* stabilizing_samples_topic = "soil-buddy-prototype/stabilizing-samples";
@@ -167,6 +160,16 @@ void setup() {
 }
 
 void loop() {
+  if(WiFi.status() != WL_CONNECTED) {
+    Serial.printf("WiFi connection lost, reconnecting...\n");
+    connect_to_wifi();
+  }
+
+  if(WiFi.status() == WL_CONNECTED && ! mqtt_client.connected()) {
+    Serial.printf("MQTT connection lost, reconnecting...\n");
+    connect_to_mqtt_server();
+  }
+
   //loop the MQTT client
   mqtt_client.loop();
 
@@ -278,20 +281,26 @@ void process_lora_packet() {
   itoa(data_payload.npk_raw_phos, npk_raw_phos_message, 10);
   itoa(data_payload.npk_raw_pot, npk_raw_pot_message, 10);
 
-  //publish data to the MQTT server
-  mqtt_client.publish(bme_acc_topic, bme_acc_message, true);
-  mqtt_client.publish(bme_iaq_topic, bme_iaq_message, true);
-  mqtt_client.publish(bme_co2_topic, bme_co2_message, true);
-  mqtt_client.publish(bme_temp_topic, bme_temp_message, true);
-  mqtt_client.publish(bme_humid_topic, bme_humid_message, true);
-  mqtt_client.publish(bme_vpd_topic, bme_vpd_message, true);
-  mqtt_client.publish(probe_temp_topic, probe_temp_message, true);
-  mqtt_client.publish(stemma_moisture_topic, stemma_moisture_message, true);
-  mqtt_client.publish(moisture_content_percent_topic, moisture_content_percent_message, true);
-  mqtt_client.publish(npk_raw_nit_topic, npk_raw_nit_message, true);
-  mqtt_client.publish(npk_raw_phos_topic, npk_raw_phos_message, true);
-  mqtt_client.publish(npk_raw_pot_topic, npk_raw_pot_message, true);
-  mqtt_client.publish(data_time_topic, local_time, true);
+  StaticJsonDocument<512> doc;
+
+  doc["data_time"] = serialized(local_time);
+  doc["bme_acc"] = serialized(data_payload.bme_acc);
+  doc["bme_iaq"] = serialized(bme_iaq_message);
+  doc["bme_co2"] = serialized(bme_co2_message);
+  doc["bme_temp"] = serialized(bme_temp_message);
+  doc["bme_humid"] = serialized(bme_humid_message);
+  doc["bme_vpd"] = serialized(bme_vpd_message);
+  doc["probe_temp"] = serialized(probe_temp_message);
+  doc["stemma_raw_moisture"] = serialized(data_payload.stemma_moisture);
+  doc["stemma_moisture_percent"] = serialized(moisture_content_percent_message);
+  doc["npk_raw_nit"] = serialized(data_payload.npk_raw_nit);
+  doc["npk_raw_phos"] = serialized(data_payload.npk_raw_phos);
+  doc["npk_raw_pot"] = serialized(data_payload.npk_raw_pot);
+
+  char json_message[384];
+  size_t json_length = serializeJson(doc, json_message, sizeof(json_message));
+  bool ok = mqtt_client.publish(data_topic, (const uint8_t*) json_message, json_length, true);
+  Serial.printf("Reading publish %s (%u bytes): %s\n", ok ? "OK" : "FAILED", (unsigned) json_length, json_message);
 
   Serial.printf("Published data to the MQTT server!\n");
 
