@@ -36,7 +36,7 @@
 
 //system configuration defaults
 #define NEXT_BIG_CYCLE_DEFAULT 1
-#define SAMPLING_INTERVAL_DEFAULT 1000
+#define SAMPLING_INTERVAL_DEFAULT 1500
 #define NUMBER_OF_STABILIZING_SAMPLES_DEFAULT 3
 #define NUMBER_OF_ACTUAL_SAMPLES_DEFAULT 12
 
@@ -454,5 +454,5 @@ void update_local_time() {
 
   Serial.printf("Updated local time of day...\n");
 
-  strftime(local_time, sizeof(local_time), "%I:%M:%S %p", &time_info);
+  strftime(local_time, sizeof(local_time), "%m/%d/%Y %I:%M:%S %p", &time_info);
 }
