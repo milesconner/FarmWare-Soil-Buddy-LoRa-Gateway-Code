@@ -90,6 +90,10 @@ int pending_packet_size = 0;
 const char* wifi_ssid = "Registered4OSU";
 const char* wifi_password = "ASYeVEP6pp3aKTfV";
 
+//Braxon
+//const char* wifi_ssid = "Magulachouse2";
+//const char* wifi_password = "Bmagulac#05";
+
 //MQTT server credentials
 const char* mqtt_server_url = "9ccaa78e62aa4522ab541b0ca1426b5c.s1.eu.hivemq.cloud";
 const int mqtt_server_port = 8883; //use 8884 in the web socket
